@@ -1023,15 +1023,15 @@ class TaskInstance(Base):
         if (task.depends_on_past and not ignore_depends_on_past and
                 not self.execution_date == task.start_date):
 
-            previous_states = {State.SUCCESS, State.SKIPPED}
+            completed_states = {State.SUCCESS, State.SKIPPED}
             if task.previous_task_complete:
-                previous_states.update({State.FAILED, State.UPSTREAM_FAILED})
+                completed_states.update({State.FAILED, State.UPSTREAM_FAILED})
 
             previous_ti = session.query(TI).filter(
                 TI.dag_id == self.dag_id,
                 TI.task_id == task.task_id,
                 TI.execution_date == self.task.dag.previous_schedule(self.execution_date),
-                TI.state.in_(previous_states),
+                TI.state.in_(completed_states),
             ).first()
 
             if task.skip_uncompleted_tasks:
