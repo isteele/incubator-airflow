@@ -1022,13 +1022,31 @@ class TaskInstance(Base):
         # Checking that the depends_on_past is fulfilled
         if (task.depends_on_past and not ignore_depends_on_past and
                 not self.execution_date == task.start_date):
+
+            previous_states = {State.SUCCESS, State.SKIPPED}
+            if task.previous_task_complete:
+                previous_states.update({State.FAILED, State.UPSTREAM_FAILED})
+
             previous_ti = session.query(TI).filter(
                 TI.dag_id == self.dag_id,
                 TI.task_id == task.task_id,
-                TI.execution_date ==
-                    self.task.dag.previous_schedule(self.execution_date),
-                TI.state.in_({State.SUCCESS, State.SKIPPED}),
+                TI.execution_date == self.task.dag.previous_schedule(self.execution_date),
+                TI.state.in_(previous_states),
             ).first()
+
+            if task.skip_uncompleted_tasks:
+                any_past_ti_running = session.query(TI).filter(
+                    TI.dag_id == self.dag_id,
+                    TI.task_id == task.task_id,
+                    TI.execution_date <= self.task.dag.previous_schedule(self.execution_date),
+                    TI.state.in_({State.RUNNING, State.UP_FOR_RETRY, State.QUEUED}),
+                ).first()
+                if any_past_ti_running:
+                    if verbose:
+                        logging.warning("{} - Skipping task, previous iteration not complete.".format(task.task_id))
+                    self.set_state(State.SKIPPED, session)
+                    return False
+
             if not previous_ti:
                 if verbose:
                     logging.warning("depends_on_past not satisfied")
@@ -1613,6 +1631,15 @@ class BaseOperator(object):
         sequentially while relying on the previous task's schedule to
         succeed. The task instance for the start_date is allowed to run.
     :type depends_on_past: bool
+    :param previous_task_complete: works with depends_on_past -- when set to
+        true, it allows for failures, not just success of previous task.
+        Just requiring that the previous task instance has completed.
+    :type previous_task_complete: bool
+    :param skip_uncompleted_tasks: works with depends_on_past -- when set
+        to true, if the same task is still running in a previous DAG Run
+        (i.e. RUNNING, UP_FOR_RETRY or QUEUED), the task will be marked
+        SKIPPED, rather than waiting to run.
+    :type skip_uncompleted_tasks: bool
     :param wait_for_downstream: when set to true, an instance of task
         X will wait for tasks immediately downstream of the previous instance
         of task X to finish successfully before it runs. This is useful if the
@@ -1691,6 +1718,8 @@ class BaseOperator(object):
             end_date=None,
             schedule_interval=None,  # not hooked as of now
             depends_on_past=False,
+            previous_task_complete=False,
+            skip_uncompleted_tasks=False,
             wait_for_downstream=False,
             dag=None,
             params=None,
@@ -1739,6 +1768,8 @@ class BaseOperator(object):
 
         self.trigger_rule = trigger_rule
         self.depends_on_past = depends_on_past
+        self.previous_task_complete = previous_task_complete
+        self.skip_uncompleted_tasks = skip_uncompleted_tasks
         self.wait_for_downstream = wait_for_downstream
         if wait_for_downstream:
             self.depends_on_past = True
@@ -1785,6 +1816,8 @@ class BaseOperator(object):
             'start_date',
             'schedule_interval',
             'depends_on_past',
+            'previous_task_complete',
+            'skip_uncompleted_tasks',
             'wait_for_downstream',
             'adhoc',
             'priority_weight',
